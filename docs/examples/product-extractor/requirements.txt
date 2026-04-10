@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+python-dotenv
+crawl4ai
