@@ -119,6 +119,8 @@ async def extract_product(req: ExtractionRequest):
             extraction_type="schema",
             instruction=INSTRUCTION,
             input_format="markdown",
+            chunk_token_threshold=16000,
+            overlap_rate=0.1,
         )
 
         config = CrawlerRunConfig(
