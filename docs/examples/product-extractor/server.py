@@ -35,7 +35,14 @@ INSTRUCTION = (
     "For price and original_price, return numeric value only — no currency symbol, no currency code (e.g. '29.99' not '$29.99' or 'USD 29.99'). "
     "Put the currency code (e.g. 'USD', 'VND', 'JPY') in the currency field separately. "
     "For isSoldOut, return true if the product is sold out / unavailable, false if it is in stock / available. "
-    "If stock status is not found on the page, use null."
+    "If stock status is not found on the page, use null. "
+    "For originCode, return the ISO 3166-1 alpha-2 country code. "
+    "Priority order: "
+    "1) Explicit manufacturing origin ('Made in', 'Xuất xứ', 'Origin', '原産国'). "
+    "2) Brand's known country of origin (e.g. Samsung → 'KR', Apple → 'US', Sony → 'JP'). "
+    "3) Marketplace or seller country — infer from domain (amazon.com → 'US', amazon.co.jp → 'JP', shopee.vn → 'VN', rakuten.co.jp → 'JP'), "
+    "currency, page language, or seller address. "
+    "You MUST return a value — always pick the best available signal. Never return null."
 )
 
 

@@ -57,6 +57,12 @@ class Product(BaseModel):
     )
     rating: Optional[str] = Field(default=None, description="e.g. '4.5/5'")
     review_count: Optional[int] = Field(default=None)
+    origin_code: Optional[str] = Field(
+        default=None,
+        description="ISO 3166-1 alpha-2 country code. "
+        "Preferred: manufacturing origin (Made in). "
+        "Fallback: marketplace or seller country (e.g. 'US' for amazon.com, 'JP' for amazon.co.jp, 'VN' for shopee.vn)",
+    )
 
 
 class ExtractionRequest(BaseModel):
