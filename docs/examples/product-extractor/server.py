@@ -2,6 +2,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 import uvicorn
 from crawl4ai import (
@@ -28,27 +29,84 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", None)
 _CACHE_TTL = int(os.getenv("CACHE_TTL", 3600))  # seconds, default 1 hour
 _extraction_cache: dict[str, tuple[ExtractionResponse, float]] = {}
 
-INSTRUCTION = (
-    "Extract product information from this page. "
-    "Return a single JSON object matching the provided schema. "
-    "For images, return full absolute URLs. "
-    "For price and original_price, return numeric value only — no currency symbol, no currency code (e.g. '29.99' not '$29.99' or 'USD 29.99'). "
-    "Put the currency code (e.g. 'USD', 'VND', 'JPY') in the currency field separately. "
-    "For isSoldOut, return true if the product is sold out / unavailable, false if it is in stock / available. "
-    "If stock status is not found on the page, use null. "
-    "For originCode, return the ISO 3166-1 alpha-2 country code. "
-    "Priority order: "
-    "1) Explicit manufacturing origin ('Made in', 'Xuất xứ', 'Origin', '原産国'). "
-    "2) Brand's known country of origin (e.g. Samsung → 'KR', Apple → 'US', Sony → 'JP'). "
-    "3) Marketplace or seller country — infer from domain (amazon.com → 'US', amazon.co.jp → 'JP', shopee.vn → 'VN', rakuten.co.jp → 'JP'), "
-    "currency, page language, or seller address. "
-    "You MUST return a value — always pick the best available signal. Never return null."
-)
+# --- TLD to country code mapping ---
+_TLD_COUNTRY_MAP = {
+    ".vn": "VN", ".jp": "JP", ".kr": "KR", ".cn": "CN", ".tw": "TW",
+    ".th": "TH", ".sg": "SG", ".my": "MY", ".id": "ID", ".ph": "PH",
+    ".in": "IN", ".au": "AU", ".nz": "NZ", ".uk": "GB", ".de": "DE",
+    ".fr": "FR", ".it": "IT", ".es": "ES", ".nl": "NL", ".be": "BE",
+    ".br": "BR", ".mx": "MX", ".ca": "CA", ".ru": "RU", ".se": "SE",
+    ".no": "NO", ".dk": "DK", ".fi": "FI", ".pl": "PL", ".pt": "PT",
+    ".ar": "AR", ".cl": "CL", ".co": "CO", ".pe": "PE",
+}
+
+# Compound ccTLDs like .co.jp, .co.uk
+_COMPOUND_TLD_MAP = {
+    ".co.jp": "JP", ".co.uk": "GB", ".co.kr": "KR", ".co.th": "TH",
+    ".co.id": "ID", ".co.nz": "NZ", ".com.au": "AU", ".com.br": "BR",
+    ".com.mx": "MX", ".com.sg": "SG", ".com.my": "MY", ".com.ph": "PH",
+    ".com.tw": "TW", ".com.vn": "VN", ".com.cn": "CN", ".com.ar": "AR",
+    ".com.co": "CO", ".com.pe": "PE", ".co.in": "IN",
+}
 
 
-# ---------------------------------------------------------------------------
-# Cache helpers
-# ---------------------------------------------------------------------------
+def _detect_country_from_url(url: str) -> str | None:
+    """Detect country code from URL domain TLD."""
+    hostname = urlparse(url).hostname or ""
+    hostname = hostname.lower().rstrip(".")
+    # Check compound TLDs first (e.g. .co.jp before .co)
+    for tld, code in _COMPOUND_TLD_MAP.items():
+        if hostname.endswith(tld):
+            return code
+    # Check simple TLDs
+    for tld, code in _TLD_COUNTRY_MAP.items():
+        if hostname.endswith(tld):
+            return code
+    return None
+
+
+def _build_instruction(url: str) -> str:
+    """Build LLM extraction instruction with URL context."""
+    domain_country = _detect_country_from_url(url)
+    hostname = urlparse(url).hostname or ""
+
+    origin_hint = ""
+    if domain_country:
+        origin_hint = (
+            f"IMPORTANT CONTEXT: The product URL is from domain '{hostname}' "
+            f"which is a {domain_country} website (country TLD). "
+            f"Unless there is explicit evidence otherwise (e.g. 'Made in Japan' on a .vn site), "
+            f"the originCode should be '{domain_country}'. "
+        )
+    else:
+        origin_hint = (
+            f"CONTEXT: The product URL domain is '{hostname}' (generic TLD like .com). "
+            f"Look for country clues in: footer address, seller location, 'Ships from', "
+            f"page language, and known marketplace country "
+            f"(e.g. amazon.com → US, ebay.com → US, aliexpress.com → CN, mercadolibre.com → AR). "
+        )
+
+    return (
+        "Extract product information from this page. "
+        "Return a single JSON object matching the provided schema. "
+        "For images, return full absolute URLs. "
+        "For price and original_price, return numeric value only — no currency symbol, no currency code (e.g. '29.99' not '$29.99' or 'USD 29.99'). "
+        "Put the currency code (e.g. 'USD', 'VND', 'JPY') in the currency field separately. "
+        "WARNING: The browser locale is Vietnamese, so prices may be auto-formatted to VND. "
+        "Do NOT trust the displayed currency blindly — cross-check with the domain country, "
+        "original price format on the page, and any currency symbols/codes shown. "
+        "For isSoldOut, return true if the product is sold out / unavailable, false if it is in stock / available. "
+        "If stock status is not found on the page, use null. "
+        "For originCode, return the ISO 3166-1 alpha-2 country code. "
+        f"{origin_hint}"
+        "Priority order for originCode: "
+        "1) Explicit manufacturing origin on the page ('Made in', 'Xuất xứ', 'Origin', '原産国', 'Sản xuất tại'). "
+        "2) Footer/contact address or seller address on the page — look at the bottom of the page for company address, country info. "
+        "3) Domain TLD country (see context above). "
+        "4) Known marketplace country (amazon.com → US, rakuten.co.jp → JP, shopee.vn → VN, lazada.vn → VN, tiki.vn → VN, etc.). "
+        "5) Brand's known HQ country as last resort (Samsung → KR, Apple → US, Sony → JP). "
+        "You MUST return a value — always pick the best available signal. Never return null."
+    )
 
 
 def _cache_get(url: str) -> ExtractionResponse | None:
@@ -117,7 +175,7 @@ async def extract_product(req: ExtractionRequest):
             ),
             schema=Product.model_json_schema(),
             extraction_type="schema",
-            instruction=INSTRUCTION,
+            instruction=_build_instruction(req.url),
             input_format="markdown",
             chunk_token_threshold=16000,
             overlap_rate=0.1,
@@ -197,6 +255,22 @@ async def clear_cache_url(url: str):
     removed = _extraction_cache.pop(url, None)
     return {"removed": removed is not None, "url": url}
 
+
+@app.post("/debug-html")
+async def debug_html(req: ExtractionRequest):
+    """Crawl a URL and return the rendered HTML for debugging selectors."""
+    config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        wait_for="js:() => document.readyState === 'complete'",
+        delay_before_return_html=5.0,
+        page_timeout=45000,
+    )
+    result = await _crawler.arun(url=req.url, config=config)
+    if not result.success:
+        return {"success": False, "error": result.error_message}
+
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=result.html or "", media_type="text/html")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

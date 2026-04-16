@@ -51,6 +51,7 @@ Crawl một URL trang sản phẩm và trả về structured JSON.
     "sku": "ABC-123",
     "brand": "Brand Name",
     "description": "Mô tả ngắn",
+    "description_html": "<div class='product-description'>...<p>Full HTML description</p>...</div>",
     "images": ["https://..."],
     "variants": [{ "name": "Red / XL", "price": null, "sku": null, "available": true }],
     "availability": "In Stock",
@@ -95,6 +96,13 @@ Mỗi request thực hiện **2 bước**:
 |---|---|---|---|
 | Static HTML | `css:body` | 0s | 30s |
 | JS-heavy (SPA) | `js:() => document.readyState === 'complete'` | 2s | 45s |
+
+### Origin Code Detection (originCode)
+LLM instruction được build **dynamically** theo URL (`_build_instruction(url)`):
+- Parse domain TLD → detect country code (`.vn` → VN, `.co.jp` → JP, v.v.)
+- Truyền context về domain country vào prompt để LLM ưu tiên đúng
+- Thứ tự ưu tiên: explicit "Made in" > footer/seller address > domain TLD > known marketplace > brand HQ
+- **Browser locale warning**: prompt cảnh báo LLM rằng browser ở VN nên currency có thể bị format sai → không tin currency hiển thị, phải cross-check với domain
 
 ### Cache
 `CacheMode.ENABLED` — crawl4ai cache lại HTML theo URL. Cùng URL gọi lại không cần crawl lại từ đầu.

@@ -36,7 +36,7 @@ class Product(BaseModel):
     sku: Optional[str] = Field(default=None, description="SKU or product code")
     brand: Optional[str] = Field(default=None)
     description: Optional[str] = Field(
-        default=None, description="Short product description"
+        default=None, description="Short product description (plain text summary)"
     )
     images: list[str] = Field(
         default_factory=list, description="List of product image URLs"
