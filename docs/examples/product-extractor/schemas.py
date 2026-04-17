@@ -38,6 +38,10 @@ class Product(BaseModel):
     description: Optional[str] = Field(
         default=None, description="Short product description (plain text summary)"
     )
+    description_html: Optional[str] = Field(
+        default=None,
+        description="Full product description as raw HTML from the page",
+    )
     images: list[str] = Field(
         default_factory=list, description="List of product image URLs"
     )
