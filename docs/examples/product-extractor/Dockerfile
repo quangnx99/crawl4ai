@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright Chromium
 RUN playwright install chromium
 
-COPY schemas.py server.py ./
+COPY schemas.py server.py domain_learning.py redis_client.py ./
 
 EXPOSE 8000
 
