@@ -2,3 +2,7 @@ fastapi
 uvicorn
 python-dotenv
 crawl4ai
+redis
+litellm
+beautifulsoup4
+httpx
