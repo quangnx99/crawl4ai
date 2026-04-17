@@ -1,8 +1,9 @@
-fastapi
-uvicorn
+fastapi[standard]
+uvicorn[standard]
 python-dotenv
 crawl4ai
-redis
+redis[hiredis]
 litellm
 beautifulsoup4
+lxml
 httpx

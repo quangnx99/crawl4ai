@@ -1,9 +1,8 @@
 FROM python:3.11-slim
 
-# Playwright system deps
+# Chromium system deps (no CJK fonts, no gnupg)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
-    gnupg \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -21,16 +20,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libatspi2.0-0 \
     libwayland-client0 \
-    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chromium
-RUN playwright install chromium
+# Install Python deps + Playwright Chromium in one layer, then strip source maps
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install chromium \
+    && find /root/.cache/ms-playwright -name "*.map" -delete \
+    && find /root/.cache/ms-playwright -name "METADATA" -delete \
+    && pip cache purge
 
 COPY schemas.py server.py domain_learning.py redis_client.py ./
 
