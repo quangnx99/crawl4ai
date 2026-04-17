@@ -124,43 +124,38 @@ def _build_instruction(url: str) -> str:
     """Build LLM extraction instruction with URL context."""
     domain_country = _detect_country_from_url(url)
     hostname = urlparse(url).hostname or ""
+    parsed_path = urlparse(url).path or ""
 
-    origin_hint = ""
     if domain_country:
         origin_hint = (
-            f"IMPORTANT CONTEXT: The product URL is from domain '{hostname}' "
-            f"which is a {domain_country} website (country TLD). "
-            f"Unless there is explicit evidence otherwise (e.g. 'Made in Japan' on a .vn site), "
-            f"the originCode should be '{domain_country}'. "
+            f"URL LOCALE SIGNAL: The URL '{url}' contains locale/TLD signals pointing to country '{domain_country}' "
+            f"(detected from path segments like /jp/, /us/ or TLD like .co.jp, .com.vn). "
+            f"Use this as a strong signal for originCode UNLESS the page explicitly states a different manufacturing country."
         )
     else:
         origin_hint = (
-            f"CONTEXT: The product URL domain is '{hostname}' (generic TLD like .com). "
-            f"Look for country clues in: footer address, seller location, 'Ships from', "
-            f"page language, and known marketplace country "
-            f"(e.g. amazon.com → US, ebay.com → US, aliexpress.com → CN, mercadolibre.com → AR). "
+            f"URL LOCALE SIGNAL: The URL domain '{hostname}' uses a generic TLD (.com). "
+            f"Determine originCode from page content only: look for 'Made in', '原産国', 'Xuất xứ', "
+            f"footer address, seller country, or known marketplace rules "
+            f"(amazon.com → US, aliexpress.com → CN, rakuten.co.jp → JP)."
         )
 
     return (
         "Extract product information from this page. "
         "Return a single JSON object matching the provided schema. "
         "For images, return full absolute URLs. "
-        "For price and original_price, return numeric value only — no currency symbol, no currency code (e.g. '29.99' not '$29.99' or 'USD 29.99'). "
+        "For price and original_price, return numeric value only — no currency symbol (e.g. '29.99' not '$29.99'). "
         "Put the currency code (e.g. 'USD', 'VND', 'JPY') in the currency field separately. "
-        "WARNING: The browser locale is Vietnamese, so prices may be auto-formatted to VND. "
-        "Do NOT trust the displayed currency blindly — cross-check with the domain country, "
-        "original price format on the page, and any currency symbols/codes shown. "
-        "For isSoldOut, return true if the product is sold out / unavailable, false if it is in stock / available. "
-        "If stock status is not found on the page, use null. "
-        "For originCode, return the ISO 3166-1 alpha-2 country code. "
-        f"{origin_hint}"
-        "Priority order for originCode: "
-        "1) Explicit manufacturing origin on the page ('Made in', 'Xuất xứ', 'Origin', '原産国', 'Sản xuất tại'). "
-        "2) Footer/contact address or seller address on the page — look at the bottom of the page for company address, country info. "
-        "3) Domain TLD country (see context above). "
-        "4) Known marketplace country (amazon.com → US, rakuten.co.jp → JP, shopee.vn → VN, lazada.vn → VN, tiki.vn → VN, etc.). "
-        "5) Brand's known HQ country as last resort (Samsung → KR, Apple → US, Sony → JP). "
-        "You MUST return a value — always pick the best available signal. Never return null."
+        "Determine the correct currency from the page content itself (currency symbols, price labels, country context) — "
+        "do NOT assume any currency based on where the browser is running. "
+        "For isSoldOut, return true if the product is sold out/unavailable, false if in stock. "
+        "If stock status is not on the page, use null. "
+        "For originCode, return the ISO 3166-1 alpha-2 country code using this priority order: "
+        "1) Explicit manufacturing origin TEXT on the page ('Made in X', 'Xuất xứ: X', '原産国: X', 'Country of Origin'). "
+        "2) Footer/about page company address country. "
+        f"3) {origin_hint} "
+        "4) Brand HQ as last resort (UNIQLO → JP, Samsung → KR, Apple → US, Sony → JP, Zara → ES). "
+        "You MUST return a value — never return null for originCode."
     )
 
 
