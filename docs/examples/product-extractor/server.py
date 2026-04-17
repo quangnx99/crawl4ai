@@ -43,6 +43,39 @@ CACHE_TTL = int(os.getenv("CACHE_TTL", 3600))  # seconds
 # Redis key prefixes
 EXTRACTION_CACHE_PREFIX = "extraction:"
 
+# --- URL path locale segment to country code (e.g. /jp/ja/ → JP) ---
+_PATH_LOCALE_MAP = {
+    "/jp/": "JP", "/ja/": "JP",
+    "/kr/": "KR", "/ko/": "KR",
+    "/cn/": "CN", "/zh/": "CN",
+    "/tw/": "TW",
+    "/vn/": "VN", "/vi/": "VN",
+    "/th/": "TH",
+    "/sg/": "SG",
+    "/my/": "MY",
+    "/id/": "ID",
+    "/ph/": "PH",
+    "/in/": "IN",
+    "/au/": "AU",
+    "/us/": "US", "/en-us/": "US",
+    "/uk/": "GB", "/en-gb/": "GB",
+    "/de/": "DE",
+    "/fr/": "FR",
+    "/it/": "IT",
+    "/es/": "ES",
+    "/nl/": "NL",
+    "/br/": "BR",
+    "/mx/": "MX",
+    "/ca/": "CA",
+    "/ru/": "RU",
+    "/se/": "SE",
+    "/no/": "NO",
+    "/dk/": "DK",
+    "/fi/": "FI",
+    "/pl/": "PL",
+    "/pt/": "PT",
+}
+
 # --- TLD to country code mapping ---
 _TLD_COUNTRY_MAP = {
     ".vn": "VN", ".jp": "JP", ".kr": "KR", ".cn": "CN", ".tw": "TW",
@@ -64,15 +97,26 @@ _COMPOUND_TLD_MAP = {
 
 
 def _detect_country_from_url(url: str) -> str | None:
-    """Detect country code from URL domain TLD."""
-    hostname = urlparse(url).hostname or ""
-    hostname = hostname.lower().rstrip(".")
+    """Detect country code from URL — checks path locale segments first, then TLD."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    path = (parsed.path or "").lower()
+
+    # 1. Path locale segments (e.g. /jp/ja/, /en-us/) — highest signal on global .com sites
+    for segment, code in _PATH_LOCALE_MAP.items():
+        if segment in path:
+            return code
+
+    # 2. Compound TLDs (e.g. .co.jp, .com.vn)
     for tld, code in _COMPOUND_TLD_MAP.items():
         if hostname.endswith(tld):
             return code
+
+    # 3. Simple TLDs
     for tld, code in _TLD_COUNTRY_MAP.items():
         if hostname.endswith(tld):
             return code
+
     return None
 
 
