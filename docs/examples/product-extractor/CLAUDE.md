@@ -22,6 +22,7 @@ Microservice FastAPI dùng để crawl trang sản phẩm bất kỳ và trả v
 ```
 product-extractor/
 ├── server.py            # FastAPI app, crawler lifecycle, endpoint logic
+├── reference.py         # Canonical prompt builder (SYSTEM_PROMPT + build_user_context)
 ├── schemas.py           # Pydantic models: Product, ExtractionRequest/Response
 ├── redis_client.py      # Redis connection singleton
 ├── domain_learning.py   # Domain selector learning logic
@@ -76,7 +77,11 @@ Crawl một URL trang sản phẩm và trả về structured JSON. Sau khi trả
     "condition": "New",
     "rating": "4.5/5",
     "review_count": 128,
-    "origin_code": "US"
+    "origin_code": "JP",
+    "ship_from_country": "JP",
+    "ship_from_evidence": "発送元: 日本",
+    "ship_from_confidence": "high",
+    "brand_country": "JP"
   },
   "error": null
 }
@@ -155,12 +160,109 @@ Request → Check domain cache
                               └─ background: learn selector → save to Redis
 ```
 
-### Origin Code Detection (originCode)
-LLM instruction được build **dynamically** theo URL (`_build_instruction(url)`):
-- Parse domain TLD → detect country code (`.vn` → VN, `.co.jp` → JP, v.v.)
-- Truyền context về domain country vào prompt để LLM ưu tiên đúng
-- Thứ tự ưu tiên: explicit "Made in" > footer/seller address > domain TLD > known marketplace > brand HQ
-- **Browser locale warning**: prompt cảnh báo LLM rằng browser ở VN nên currency có thể bị format sai → không tin currency hiển thị, phải cross-check với domain
+### `originCode` Detection — CRITICAL cho proxy shopping
+
+> ⚠️ **QUY ƯỚC QUAN TRỌNG (read this first):**
+>
+> Trong dự án này, **`originCode` = `shipFromCountry`** (nước **parcel xuất phát**, tức kho seller).
+>
+> - ❌ KHÔNG phải "Made in" (manufacturing origin).
+> - ❌ KHÔNG phải brand HQ.
+> - ❌ KHÔNG phải shipping destination.
+> - ✅ LÀ nước gửi parcel đi → dùng để tính phí ship quốc tế + phí mua hộ.
+>
+> Tên `originCode` là **legacy** (giữ cho backward-compat với consumer cũ). Code mới có thể đọc `ship_from_country` — cả hai luôn cùng giá trị.
+>
+> **`originCode` KHÔNG BAO GIỜ null** — hệ thống có deterministic fallback chain đảm bảo luôn có giá trị (xem mục "Guaranteed non-null" bên dưới).
+
+**Use case**: Dịch vụ là **proxy shopping / mua hộ** từ Vietnam. `originCode` quyết định bảng giá shipping quốc tế và service fee.
+
+Prompt builder trong `reference.py` (canonical). `server.py` import `build_instruction(url)` trực tiếp.
+
+**Phân biệt 3 khái niệm:**
+
+| Field | Ý nghĩa | Dùng cho | Có thể null? |
+|---|---|---|---|
+| `originCode` = `shipFromCountry` | Nước parcel được gửi đi (kho seller) | ✅ Tính phí ship + proxy fee | ❌ KHÔNG — luôn có giá trị |
+| `shipFromEvidence` | Quoted snippet từ page support cho ship-from | Audit trail | ✅ Có thể null (khi không có explicit text) |
+| `shipFromConfidence` | `"high"` / `"medium"` / `"low"` / null | QA / debugging | ✅ |
+| `brandCountry` | HQ của brand | Informational only | ✅ |
+
+Ví dụ: sản phẩm Uniqlo **Made in Vietnam** bán trên `uniqlo.com/jp` → `originCode = "JP"` (Uniqlo JP ship từ kho Nhật), **không phải VN**.
+
+**Kiến trúc prompt — tối ưu cho prefix caching:**
+
+- `SYSTEM_PROMPT` — **static**, định nghĩa rule chung → KV-cache trên vLLM / TGI / Ollama.
+- `build_user_context(url)` — **dynamic**, chứa per-URL hints:
+  - Site locale detect từ URL TLD / path
+  - Site type: `MARKETPLACE` / `Single-brand` / `Generic TLD`
+  - Native currency
+  - Brand default warehouse (Shein→CN, Temu→CN)
+
+**Site type taxonomy** (`reference._MARKETPLACES`, `_BRAND_DEFAULT_SHIPFROM`):
+
+| Loại | Ship-from logic | Ví dụ |
+|---|---|---|
+| **Marketplace** | LLM phải extract từ seller info / "Ships from" / "Item location" trên page | amazon.*, ebay.*, shopee.*, lazada.*, aliexpress, rakuten, mercari, etsy, taobao |
+| **Brand default** | Default warehouse đã biết | shein.com→CN, temu.com→CN, taobao.com→CN |
+| **Single-brand national** | Site locale = ship-from | uniqlo.com/jp→JP, rakuten.co.jp→JP, zozotown.jp→JP |
+| **Generic .com** | Explicit text / hostname default / last-resort fallback | nike.com→US, apple.com→US |
+
+**Extraction priority trong `SYSTEM_PROMPT`** (LLM làm trước, sau đó hậu xử lý):
+
+1. Explicit text đa ngôn ngữ (`Ships from`, `発送元`, `发货地`, `Giao từ`, `배송지`, `Dispatched from`, ...) → `confidence=high`
+2. Seller info block (Amazon buy-box, eBay item location, AliExpress seller country, Rakuten 店舗所在地) → `confidence=high`
+3. Site context hint cho single-brand site → `confidence=medium`
+4. Không có gì → LLM trả `null`, nhưng **fallback chain sẽ fill** (xem bên dưới)
+
+### Guaranteed non-null `originCode` — fallback chain
+
+Sau khi LLM trả output, `server.py::extract_product` chạy 2 bước hậu xử lý:
+
+**Bước 1: `_sanitize_origin_code(code, html, url)`** — null-out hallucination (chỉ can thiệp khi LLM trả giá trị sai rõ ràng):
+
+- Có explicit evidence text → trust LLM
+- Brand default match (shein→CN) → trust
+- Local marketplace (Shopee/Lazada/Tiki/Rakuten) + code = site locale → trust
+- Single-brand site + code = site locale → trust
+- Code = VN trên non-VN site, không evidence → **null** ("Ship TO Vietnam" banner confusion)
+- Crossborder marketplace (amazon/ebay) không evidence → **null** (không thể verify seller country)
+
+**Bước 2: `_guarantee_origin_code(code, html, url)`** — fallback chain, đảm bảo **không bao giờ null**:
+
+| Ưu tiên | Rule | Ví dụ | Reason tag |
+|---|---|---|---|
+| 1 | Giữ giá trị LLM nếu đã set | `JP` → `JP` | `llm` |
+| 2 | URL path / TLD locale | `lazada.vn` → `VN`, `uniqlo.com/jp/` → `JP` | `url_locale` |
+| 3 | Hostname default table (~60 domains) | `amazon.com` → `US`, `rakuten.co.jp` → `JP` | `hostname_default` |
+| 4 | TLD-only fallback | `random-shop.de` → `DE` | `tld_fallback` |
+| 5 | Last resort | Generic `.com` unknown → `US` | `last_resort` |
+
+**Audit log**: Mỗi lần fallback kích hoạt, log ra `[Origin Fallback] <url>: None → 'VN' (url_locale)` để grep debug.
+
+### Chống "Ship TO Vietnam" confusion
+
+Crawler chạy trên host VN nên rendered HTML có thể chứa:
+
+- Banner "Ship to Vietnam" / "Giao hàng đến Việt Nam" → **destination**, KHÔNG phải ship-from
+- Giá auto-convert sang VND
+- UI tiếng Việt từ geolocation scripts
+
+**Prompt cảnh báo rõ**: `"Ship TO Vietnam" ≠ "Ship FROM Vietnam"`. Chỉ chấp nhận ship-FROM phrasing.
+
+**Ba lớp phòng vệ:**
+
+1. **Browser locale per-request** — `_resolve_browser_locale(url)` set `CrawlerRunConfig(locale=, timezone_id=)` match với site locale. Trang JP/US/EU không serve banner VN nữa.
+2. **Prompt rules** — `SYSTEM_PROMPT` cảnh báo explicit về `Ship TO` vs `Ship FROM`, yêu cầu evidence snippet cho mọi non-null output từ LLM.
+3. **Sanitizer** (`_sanitize_origin_code`) — null-out các case suspicious như "VN trên site non-VN không evidence".
+
+Sau sanitizer, **fallback chain vẫn đảm bảo `originCode` non-null** từ URL/hostname/TLD signals thay vì từ VN-banner hallucination.
+
+### Currency field
+
+Prompt ưu tiên: (1) JSON-LD `priceCurrency`, (2) microdata, (3) symbol cạnh price.
+
+**Geo-leak override**: Page show VND nhưng site locale non-VN → treat là auto-convert, dùng native currency của site.
 
 ## Chạy local
 

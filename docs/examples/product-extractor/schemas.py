@@ -63,9 +63,30 @@ class Product(BaseModel):
     review_count: Optional[int] = Field(default=None)
     origin_code: Optional[str] = Field(
         default=None,
-        description="ISO 3166-1 alpha-2 country code. "
-        "Preferred: manufacturing origin (Made in). "
-        "Fallback: marketplace or seller country (e.g. 'US' for amazon.com, 'JP' for amazon.co.jp, 'VN' for shopee.vn)",
+        description="DEPRECATED alias for ship_from_country. Kept for backward "
+        "compatibility with existing consumers. New code should use ship_from_country.",
+    )
+    ship_from_country: Optional[str] = Field(
+        default=None,
+        description="ISO 3166-1 alpha-2 code of the country the parcel SHIPS FROM "
+        "(seller's warehouse). Used to compute international shipping + proxy fees. "
+        "NOT the manufacturing country, NOT the brand HQ. "
+        "Example: product made in VN sold on uniqlo.com/jp → ship_from_country = JP.",
+    )
+    ship_from_evidence: Optional[str] = Field(
+        default=None,
+        description="Exact quoted snippet from the page supporting ship_from_country "
+        "(<= 120 chars). Null when ship_from_country is null or inferred from site context.",
+    )
+    ship_from_confidence: Optional[str] = Field(
+        default=None,
+        description="Confidence: 'high' (explicit Ships-from text / seller location), "
+        "'medium' (inferred from site locale for single-brand sites), or null.",
+    )
+    brand_country: Optional[str] = Field(
+        default=None,
+        description="ISO alpha-2 of brand headquarters country. Informational only — "
+        "NOT used for shipping fee calculation.",
     )
 
 
