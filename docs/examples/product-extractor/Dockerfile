@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && find /root/.cache/ms-playwright -name "METADATA" -delete \
     && pip cache purge
 
-COPY schemas.py server.py domain_learning.py redis_client.py ./
+COPY schemas.py server.py domain_learning.py redis_client.py reference.py site_config.py ./
 
 EXPOSE 8000
 
